@@ -14,11 +14,11 @@
 #define DHTTYPE DHT11 
 #define TDS_PIN 34    
 #define SERVO_PIN 13
-#define LED_RED_PIN 4     // Satu-satunya LED Merah untuk status
+#define LED_RED_PIN 4  
 
 const char* mqtt_server = "broker.hivemq.com";
 const char* mqtt_topic = "aquarium/sensors";
-const char* mqtt_client_id = "ESP32_FishFeeder_Final_001"; // Pastikan ID Unik
+const char* mqtt_client_id = "ESP32_FishFeeder_Final_001"; 
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -65,7 +65,7 @@ void reconnectMQTT() {
 }
 
 void executeFeeding() {
-  if (tdsValue > 1000) {
+  if (tdsValue > 140) {
     Blynk.virtualWrite(V5, "Air Kotor! Pakan Batal.");
     return;
   }
