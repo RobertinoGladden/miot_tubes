@@ -1,5 +1,3 @@
-
-// Blynk Settings
 #define BLYNK_TEMPLATE_ID "TMPL6fI-yrb2c"
 #define BLYNK_TEMPLATE_NAME "Water Quality Monitor"
 #define BLYNK_AUTH_TOKEN "A3hcFFknJ7uIOuVSAhWrqUlBiCSudGwb"
@@ -12,34 +10,30 @@
 #include <PubSubClient.h>
 #include <BlynkSimpleEsp32.h>
 
-// Pin Definitions
 #define DHTPIN 15  
 #define DHTTYPE DHT11 
 #define TDS_PIN 34    
 #define SERVO_PIN 13
 #define LED_RED_PIN 4  
 
-// MQTT Settings
 const char* mqtt_server = "broker.hivemq.com";
 const char* mqtt_topic_sensor = "aquarium/sensors";
 const char* mqtt_topic_feed = "aquarium/feed";
 const char* mqtt_client_id = "ESP32_Aquarium_MIOT_Final"; 
 
-// WiFi Credentials
 const char* ssid = "onit";
 const char* password = "robertino";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
 DHT dht(DHTPIN, DHTTYPE);
-Servo myServo; // Objek servo tetap sama, namun menggunakan class dari ESP32Servo
+Servo myServo;
 
 float h = 0, t = 0, tdsValue = 0;
 bool feedingProcess = false;
 unsigned long previousMillis = 0;
 const long interval = 3000; 
 
-// Forward Declarations
 void executeFeeding();
 void reconnectMQTT();
 void readSensors();
@@ -89,10 +83,9 @@ void executeFeeding() {
     feedingProcess = true;
     Blynk.virtualWrite(V5, "Memberi pakan...");
     
-    // Pergerakan Servo yang lebih stabil
     Serial.println("Servo: Bergerak ke 90 derajat...");
     myServo.write(90);  
-    delay(1500); // Waktu jeda ditambah agar servo memiliki waktu untuk berputar penuh
+    delay(1500); 
     
     Serial.println("Servo: Kembali ke 0 derajat...");
     myServo.write(0);   
@@ -143,14 +136,12 @@ void setup() {
     
     Serial.println("System Booting...");
     
-    // Konfigurasi Khusus ESP32Servo
     ESP32PWM::allocateTimer(0);
     ESP32PWM::allocateTimer(1);
     ESP32PWM::allocateTimer(2);
     ESP32PWM::allocateTimer(3);
-    myServo.setPeriodHertz(50);    // Standar servo 50Hz
+    myServo.setPeriodHertz(50);    
     
-    // Attach servo dengan range pulsa standar (500us - 2400us)
     myServo.attach(SERVO_PIN, 500, 2400); 
     myServo.write(0); 
     
