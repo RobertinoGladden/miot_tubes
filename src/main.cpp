@@ -1,193 +1,190 @@
-/* * KODE MONITORING KUALITAS AIR & FEEDER OTOMATIS
- * Menggunakan: ESP32, DHT22, TDS Meter, dan Servo MG995
+/* * PROGRAM MONITORING AKUARIUM SMART IOT
+ * Fitur: Cek Suhu (DHT22), Kualitas Air (TDS), dan Feeder dengan MG995 + Relay
+ * Logika: Relay memutus/menyambung daya eksternal agar ESP32 tidak terbakar
  */
 
+// --- IDENTITAS BLYNK (Wajib di bagian paling atas) ---
 #define BLYNK_TEMPLATE_ID "TMPL6fI-yrb2c"
 #define BLYNK_TEMPLATE_NAME "Water Quality Monitor"
-#define BLYNK_AUTH_TOKEN "A3hcFFknJ7uIOuVSAhWrqUlBiCSudGwb"
+#define BBLYNK_AUTH_TOKEN "A3hcFFknJ7uIOuVSAhWrqUlBiCSudGwb"
 
-#include <Arduino.h>
-#include <Wire.h>
-#include <DHT.h>
-#include <ESP32Servo.h>
-#include <WiFi.h>
-#include <PubSubClient.h>
-#include <BlynkSimpleEsp32.h>
+// --- IMPORT LIBRARY ---
+#include <Arduino.h>      // Library dasar Arduino
+#include <Wire.h>         // Library komunikasi I2C
+#include <DHT.h>          // Library untuk sensor suhu/kelembapan
+#include <ESP32Servo.h>   // Library khusus servo untuk ESP32 (mendukung PWM)
+#include <WiFi.h>         // Library koneksi WiFi
+#include <PubSubClient.h> // Library untuk protokol MQTT
+#include <BlynkSimpleEsp32.h> // Library utama Blynk IoT
 
-// --- KONFIGURASI PIN ---
-#define DHTPIN 15           // Pin data sensor Suhu DHT22
-#define DHTTYPE DHT22       // Menentukan jenis sensor DHT yang dipakai
-#define TDS_PIN 34          // Pin analog untuk sensor TDS (ADC)
-#define SERVO_PIN 13        // Pin sinyal (PWM) untuk servo MG995
-#define LED_RED_PIN 4       // Pin LED sebagai indikator sistem hidup
+// --- DEFINISI PIN ---
+#define DHTPIN 15         // Pin data sensor DHT22
+#define DHTTYPE DHT22     // Memberitahu program kita pakai DHT22 (bukan DHT11)
+#define TDS_PIN 34        // Pin AnalogRead untuk sensor TDS
+#define RELAY_PIN 13      // Pin kontrol Relay (Saklar Daya)
+#define SERVO_PIN 14      // Pin sinyal PWM untuk MG995
+#define LED_RED_PIN 4     // Pin LED indikator sistem
 
-// --- KONFIGURASI MQTT & WIFI ---
-const char* mqtt_server = "broker.hivemq.com";
-const char* mqtt_topic_sensor = "aquarium/sensors";
-const char* mqtt_topic_feed = "aquarium/feed";
+// --- KONFIGURASI JARINGAN ---
+const char* mqtt_server = "broker.hivemq.com"; // Alamat server broker MQTT
+const char* mqtt_topic_sensor = "aquarium/sensors"; // Jalur kirim data sensor
+const char* mqtt_topic_feed = "aquarium/feed";     // Jalur terima perintah pakan
 const char* mqtt_client_id = "ESP32_Aquarium_MIOT_Final"; 
 
-const char* ssid = "onit";            // Nama WiFi Anda
-const char* password = "robertino";    // Password WiFi Anda
+const char* ssid = "onit";           // Nama WiFi Anda
+const char* password = "robertino";   // Password WiFi Anda
 
 // --- INISIALISASI OBJEK ---
-WiFiClient espClient;
-PubSubClient client(espClient);
-DHT dht(DHTPIN, DHTTYPE);
-Servo myServo;
+WiFiClient espClient;           // Membuat klien WiFi
+PubSubClient client(espClient); // Membuat klien MQTT berbasis WiFi
+DHT dht(DHTPIN, DHTTYPE);       // Inisialisasi sensor suhu
+Servo myServo;                  // Membuat objek kontrol motor servo
 
-// --- VARIABEL GLOBAL ---
-float h = 0, t = 0, tdsValue = 0;
-bool feedingProcess = false;       // Penanda jika servo sedang bergerak
-unsigned long previousMillis = 0;  // Untuk pengatur waktu non-blocking
-const long interval = 3000;        // Jeda pembacaan sensor (3 detik)
+// --- VARIABEL PENYIMPAN DATA ---
+float h = 0, t = 0, tdsValue = 0; // Wadah angka pecahan (float) untuk sensor
+bool feedingProcess = false;       // Status: true jika pakan sedang jalan
+unsigned long previousMillis = 0;  // Pengingat waktu terakhir kirim data
+const long interval = 3000;        // Jeda waktu antar pembacaan (3 detik)
 
-// --- PROTOTIPE FUNGSI ---
-void executeFeeding();
-void reconnectMQTT();
-void readSensors();
-void sendData();
-void handleHeartbeatLED();
-void callback(char* topic, byte* payload, unsigned int length);
-
-// Fungsi membuat LED berkedip (Heartbeat) agar kita tahu ESP32 tidak hang
+// --- FUNGSI HEARTBEAT (KEDIP LED) ---
 void handleHeartbeatLED() {
     static unsigned long lastBlink = 0;
-    if (millis() - lastBlink > 500) {
-        lastBlink = millis();
-        digitalWrite(LED_RED_PIN, !digitalRead(LED_RED_PIN));
+    if (millis() - lastBlink > 500) { // Jika sudah lewat 500ms
+        lastBlink = millis();         // Perbarui waktu terakhir
+        digitalWrite(LED_RED_PIN, !digitalRead(LED_RED_PIN)); // Balik status LED (On/Off)
     }
 }
 
-// Fungsi yang berjalan otomatis jika ada pesan masuk dari MQTT (Broker)
+// --- FUNGSI MQTT CALLBACK (TERIMA PERINTAH) ---
 void callback(char* topic, byte* payload, unsigned int length) {
     String message = "";
-    for (int i = 0; i < length; i++) message += (char)payload[i];
+    for (int i = 0; i < length; i++) message += (char)payload[i]; // Rakit pesan masuk
     
-    // Jika ada perintah "1" masuk ke topik aquarium/feed, jalankan pakan
+    // Jika pesan "1" masuk ke topik feed, jalankan pakan
     if (String(topic) == mqtt_topic_feed && message == "1") {
         if (!feedingProcess) executeFeeding();
     }
 }
 
-// Fungsi untuk menghubungkan ulang ke Broker MQTT jika terputus
+// --- FUNGSI REKONEKSI MQTT ---
 void reconnectMQTT() {
-    if (!client.connected()) {
-        if (client.connect(mqtt_client_id)) {
-            client.subscribe(mqtt_topic_feed); // Langganan topik perintah pakan
+    if (!client.connected()) { // Jika koneksi putus
+        if (client.connect(mqtt_client_id)) { // Coba hubungkan ulang
+            client.subscribe(mqtt_topic_feed); // Daftar ulang ke topik perintah
         }
     }
 }
 
-// LOGIKA UTAMA: Pemberian Pakan
+// --- FUNGSI UTAMA: PEMBERIAN PAKAN ---
 void executeFeeding() {
-    Serial.println("\n--- PENGECEKAN KONDISI AIR ---");
+    Serial.println("\n--- CEK TDS SEBELUM PAKAN ---");
 
-    // SYARAT AMBANG BATAS: Hanya memberi pakan jika TDS 20 - 100 ppm
+    // Syarat: Air harus bersih (20 - 100 ppm)
     if (tdsValue >= 20.0 && tdsValue <= 100.0) {
-        Serial.printf("Air Bersih (%.1f ppm). Memulai MG995...\n", tdsValue);
-        Blynk.virtualWrite(V5, "Air Bersih. Memberi Pakan...");
+        Serial.printf("Kondisi OK (%.1f ppm). Relay Aktif!\n", tdsValue);
+        Blynk.virtualWrite(V5, "Memberi Pakan..."); // Update status di Blynk
         
-        feedingProcess = true; // Kunci proses agar tidak tumpang tindih
-        
-        // Hubungkan sinyal ke Servo MG995
-        myServo.attach(SERVO_PIN, 500, 2400); 
-        delay(200); 
+        feedingProcess = true; // Kunci proses (lock)
 
-        // Gerakan Membuka (90 derajat)
-        myServo.write(90);  
-        delay(1500); 
-        
-        // Gerakan Menutup kembali ke 0
-        myServo.write(0);   
-        delay(800); 
+        // 1. HIDUPKAN RELAY (Menyalakan aliran listrik dari charger ke MG995)
+        digitalWrite(RELAY_PIN, LOW); // LOW biasanya mengaktifkan modul relay
+        delay(500); // Tunggu listrik stabil
 
-        // Putus Sinyal (Detach) agar servo tidak menarik arus besar saat diam
-        myServo.detach(); 
-        feedingProcess = false;
+        // 2. AKTIFKAN SINYAL SERVO
+        myServo.attach(SERVO_PIN, 500, 2400); // Kirim pulsa PWM ke servo
+        delay(100); 
+
+        // 3. GERAKAN SERVO (BUKA - TUTUP)
+        myServo.write(90);  // Putar ke 90 derajat (Membuka)
+        delay(1500);        // Jeda pakan turun
+        myServo.write(0);   // Putar ke 0 derajat (Menutup)
+        delay(1000);        // Tunggu servo selesai berputar
+
+        // 4. MATIKAN DAYA (KEAMANAN)
+        myServo.detach();             // Hentikan sinyal data
+        digitalWrite(RELAY_PIN, HIGH); // Putus arus listrik (Relay OFF)
         
+        feedingProcess = false;        // Buka kunci proses (unlock)
         Blynk.virtualWrite(V5, "Selesai");
-        Serial.println("Proses Pakan Selesai.");
+        Serial.println("Pakan Selesai. Daya MG995 Diputus.");
     } 
     else {
-        // Jika air kotor, pakan dibatalkan demi kesehatan ikan
-        Serial.printf("Pakan Dibatalkan: TDS %.1f ppm (Bukan 20-100 ppm)\n", tdsValue);
-        Blynk.virtualWrite(V5, "Air Kotor/Tidak Sesuai! Batal.");
+        // Jika TDS di luar rentang, pakan ditolak
+        Serial.printf("Batal! TDS %.1f ppm Tidak Sesuai.\n", tdsValue);
+        Blynk.virtualWrite(V5, "TDS Jelek! Pakan Batal.");
     }
-    Serial.println("---------------------------\n");
 }
 
-// Fungsi Membaca Sensor (DHT22 & TDS)
+// --- FUNGSI BACA SENSOR ---
 void readSensors() {
-    h = dht.readHumidity();      // Baca Kelembapan
-    t = dht.readTemperature();   // Baca Suhu Celsius
+    h = dht.readHumidity();      // Ambil data kelembapan udara
+    t = dht.readTemperature();   // Ambil data suhu air/udara
     
-    // Membaca nilai analog dari TDS Meter (0-4095)
-    int sensorValue = analogRead(TDS_PIN);
-    // Konversi ADC ke Voltase (ESP32 = 3.3V)
-    float voltage = sensorValue * (3.3 / 4095.0);
-    // Rumus polinomial untuk mendapatkan nilai PPM dari voltase
+    int sensorValue = analogRead(TDS_PIN); // Baca nilai analog (0-4095)
+    float voltage = sensorValue * (3.3 / 4095.0); // Ubah ke voltase (ESP32 = 3.3V)
+    
+    // Rumus konversi voltase ke kepekatan zat air (PPM)
     tdsValue = (133.42 * pow(voltage, 3) - 255.86 * pow(voltage, 2) + 857.39 * voltage) * 0.5;
 
     if (isnan(h) || isnan(t)) {
-        Serial.println("Gagal membaca sensor DHT22!");
-    } else {
-        Serial.printf("Update -> Suhu: %.1fC | TDS: %.1f ppm\n", t, tdsValue);
+        Serial.println("Error: Sensor DHT22 tidak terbaca!");
     }
 }
 
-// Fungsi mengirim data ke Blynk (Virtual Pin) dan MQTT (JSON)
+// --- FUNGSI KIRIM DATA KE CLOUD ---
 void sendData() {
+    // Kirim ke MQTT dalam format teks JSON
     if (client.connected() && !isnan(t)) {
-        // Format data ke JSON untuk MQTT
-        String payload = "{\"temp\":" + String(t, 1) + ",\"hum\":" + String(h, 1) + ",\"tds\":" + String(tdsValue, 1) + "}";
+        String payload = "{\"temp\":" + String(t, 1) + ",\"tds\":" + String(tdsValue, 1) + "}";
         client.publish(mqtt_topic_sensor, payload.c_str());
     }
-    
-    // Kirim data ke Aplikasi Blynk di HP
-    Blynk.virtualWrite(V0, t);        // V0 untuk Suhu
-    Blynk.virtualWrite(V1, h);        // V1 untuk Kelembapan
-    Blynk.virtualWrite(V2, tdsValue); // V2 untuk TDS
+    // Kirim ke Blynk Dashboard
+    Blynk.virtualWrite(V0, t);        // Gauge Suhu
+    Blynk.virtualWrite(V1, h);        // Gauge Kelembapan
+    Blynk.virtualWrite(V2, tdsValue); // Gauge TDS
 }
 
-// Fungsi yang jalan saat tombol di Aplikasi Blynk (Virtual Pin 4) ditekan
-BLYNK_WRITE(V4) {
-    if (param.asInt() == 1 && !feedingProcess) {
-        executeFeeding();
+// --- TERIMA INPUT TOMBOL DARI BLYNK ---
+BLYNK_WRITE(V4) { // Pin V4 di aplikasi adalah tombol pakan
+    if (param.asInt() == 1 && !feedingProcess) { // Jika ditekan dan sedang tidak sibuk
+        executeFeeding(); // Jalankan fungsi pakan
     }
 }
 
+// --- SETUP (JALAN 1 KALI SAAT NYALA) ---
 void setup() {
-    Serial.begin(115200);      // Komunikasi Serial ke PC
-    pinMode(LED_RED_PIN, OUTPUT);
+    Serial.begin(115200); // Mulai monitor serial untuk debug
     
-    // Pengaturan PWM untuk Servo pada ESP32
-    ESP32PWM::allocateTimer(0);
-    myServo.setPeriodHertz(50); 
+    pinMode(RELAY_PIN, OUTPUT);     // Set pin relay sebagai output
+    digitalWrite(RELAY_PIN, HIGH);  // Pastikan relay mati di awal (HIGH = OFF)
+    pinMode(LED_RED_PIN, OUTPUT);   // Set pin LED sebagai output
     
-    dht.begin();               // Aktifkan sensor suhu
+    ESP32PWM::allocateTimer(0);     // Alokasi memori PWM untuk servo
+    myServo.setPeriodHertz(50);     // Frekuensi servo standar 50Hz
     
-    // Hubungkan ke Server Blynk
+    dht.begin(); // Mulai sensor suhu
+    
+    // Memulai koneksi ke server Blynk dan WiFi
     Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
     
-    // Hubungkan ke Server MQTT
+    // Set alamat server MQTT
     client.setServer(mqtt_server, 1883);
-    client.setCallback(callback);
+    client.setCallback(callback); // Tentukan fungsi untuk terima perintah
     
-    Serial.println("System Ready.");
+    Serial.println("Sistem Siap! Menunggu Sensor...");
 }
 
+// --- LOOP (JALAN TERUS MENERUS) ---
 void loop() {
-    Blynk.run();               // Menjaga koneksi Blynk
-    client.loop();             // Menjaga koneksi MQTT
-    reconnectMQTT();           // Cek koneksi internet/MQTT
-    handleHeartbeatLED();      // Kedipkan LED indikator
+    Blynk.run();       // Jalankan layanan Blynk
+    client.loop();     // Jalankan layanan MQTT
+    reconnectMQTT();   // Pastikan MQTT selalu terhubung
+    handleHeartbeatLED(); // Berkedip sebagai tanda sistem hidup
 
-    // Timer pembacaan sensor (setiap 3 detik)
-    unsigned long currentMillis = millis();
-    if (currentMillis - previousMillis >= interval) {
-        previousMillis = currentMillis;
-        readSensors();         // Ambil data sensor
-        sendData();            // Kirim data ke awan/cloud
+    unsigned long currentMillis = millis(); // Ambil waktu sekarang
+    if (currentMillis - previousMillis >= interval) { // Jika sudah 3 detik
+        previousMillis = currentMillis; // Reset pengingat waktu
+        readSensors(); // Ambil data sensor terbaru
+        sendData();    // Kirim data ke aplikasi
     }
 }
