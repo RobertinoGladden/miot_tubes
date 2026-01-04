@@ -10,8 +10,8 @@
 #include <PubSubClient.h>
 #include <BlynkSimpleEsp32.h>
 
-#define DHTPIN 15  
-#define DHTTYPE DHT11 
+#define DHTPIN 15 
+#define DHTTYPE DHT22 
 #define TDS_PIN 34    
 #define SERVO_PIN 13
 #define LED_RED_PIN 4  
@@ -34,6 +34,7 @@ bool feedingProcess = false;
 unsigned long previousMillis = 0;
 const long interval = 3000; 
 
+// Prototype Fungsi
 void executeFeeding();
 void reconnectMQTT();
 void readSensors();
@@ -53,8 +54,6 @@ void callback(char* topic, byte* payload, unsigned int length) {
     String message = "";
     for (int i = 0; i < length; i++) message += (char)payload[i];
     
-    Serial.printf("MQTT Command [%s]: %s\n", topic, message.c_str());
-
     if (String(topic) == mqtt_topic_feed && message == "1") {
         if (!feedingProcess) executeFeeding();
     }
@@ -62,38 +61,44 @@ void callback(char* topic, byte* payload, unsigned int length) {
 
 void reconnectMQTT() {
     if (!client.connected()) {
-        Serial.print("Mencoba koneksi MQTT...");
         if (client.connect(mqtt_client_id)) {
-            Serial.println("Terhubung!");
             client.subscribe(mqtt_topic_feed);
-        } else {
-            Serial.printf("Gagal, rc=%d\n", client.state());
         }
     }
 }
 
 void executeFeeding() {
-    Serial.println("\n--- MEMULAI URUTAN PAKAN ---");
-    if (tdsValue > 80) {
-        Serial.printf("Pakan Dibatalkan: TDS Tinggi (%.1f ppm)\n", tdsValue);
-        Blynk.virtualWrite(V5, "Air Kotor! Pakan Batal.");
-        return;
+    Serial.println("\n--- PENGECEKAN KONDISI AIR ---");
+
+    // LOGIKA BARU: Bersih jika berada di rentang 20 - 100 ppm
+    if (tdsValue >= 20.0 && tdsValue <= 100.0) {
+        Serial.printf("Air Bersih (%.1f ppm). Memulai MG995...\n", tdsValue);
+        Blynk.virtualWrite(V5, "Air Bersih. Memberi Pakan...");
+        
+        feedingProcess = true;
+        
+        // Konfigurasi khusus MG995: Attach dengan range PWM standar
+        myServo.attach(SERVO_PIN, 500, 2400); 
+        delay(200); 
+
+        // Gerakan Membuka
+        myServo.write(90);  
+        delay(1500); 
+        
+        // Gerakan Menutup
+        myServo.write(0);   
+        delay(800); // MG995 butuh waktu sedikit lebih lama untuk kembali karena berat
+
+        myServo.detach(); // Lepas sinyal agar MG995 tidak bergetar/panas
+        feedingProcess = false;
+        
+        Blynk.virtualWrite(V5, "Selesai");
+        Serial.println("Proses Pakan Selesai.");
+    } 
+    else {
+        Serial.printf("Pakan Dibatalkan: TDS %.1f ppm (Bukan 20-50 ppm)\n", tdsValue);
+        Blynk.virtualWrite(V5, "Air Kotor/Tidak Sesuai! Batal.");
     }
-    
-    feedingProcess = true;
-    Blynk.virtualWrite(V5, "Memberi pakan...");
-    
-    Serial.println("Servo: Bergerak ke 90 derajat...");
-    myServo.write(90);  
-    delay(1500); 
-    
-    Serial.println("Servo: Kembali ke 0 derajat...");
-    myServo.write(0);   
-    delay(500);
-    
-    feedingProcess = false;
-    Blynk.virtualWrite(V5, "Selesai");
-    Serial.println("Urutan Pakan Selesai.");
     Serial.println("---------------------------\n");
 }
 
@@ -106,9 +111,9 @@ void readSensors() {
     tdsValue = (133.42 * pow(voltage, 3) - 255.86 * pow(voltage, 2) + 857.39 * voltage) * 0.5;
 
     if (isnan(h) || isnan(t)) {
-        Serial.println("Gagal membaca sensor DHT!");
+        Serial.println("Gagal membaca sensor DHT22!");
     } else {
-        Serial.printf("Sensor -> Suhu: %.1fC | Hum: %.1f%% | TDS: %.1f ppm\n", t, h, tdsValue);
+        Serial.printf("Update -> Suhu: %.1fC | TDS: %.1f ppm\n", t, tdsValue);
     }
 }
 
@@ -117,7 +122,6 @@ void sendData() {
         String payload = "{\"temp\":" + String(t, 1) + ",\"hum\":" + String(h, 1) + ",\"tds\":" + String(tdsValue, 1) + "}";
         client.publish(mqtt_topic_sensor, payload.c_str());
     }
-
     Blynk.virtualWrite(V0, t);
     Blynk.virtualWrite(V1, h);
     Blynk.virtualWrite(V2, tdsValue);
@@ -132,28 +136,17 @@ BLYNK_WRITE(V4) {
 void setup() {
     Serial.begin(115200);
     pinMode(LED_RED_PIN, OUTPUT);
-    digitalWrite(LED_RED_PIN, HIGH);
     
-    Serial.println("System Booting...");
-    
+    // Setup PWM untuk MG995
     ESP32PWM::allocateTimer(0);
-    ESP32PWM::allocateTimer(1);
-    ESP32PWM::allocateTimer(2);
-    ESP32PWM::allocateTimer(3);
-    myServo.setPeriodHertz(50);    
-    
-    myServo.attach(SERVO_PIN, 500, 2400); 
-    myServo.write(0); 
-    
-    delay(5000); 
+    myServo.setPeriodHertz(50); 
     
     dht.begin();
-    
     Blynk.begin(BLYNK_AUTH_TOKEN, ssid, password);
     client.setServer(mqtt_server, 1883);
     client.setCallback(callback);
     
-    Serial.println("Setup Selesai.");
+    Serial.println("System Ready.");
 }
 
 void loop() {
