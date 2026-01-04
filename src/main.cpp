@@ -6,7 +6,7 @@
 // --- IDENTITAS BLYNK (Wajib di bagian paling atas) ---
 #define BLYNK_TEMPLATE_ID "TMPL6fI-yrb2c"
 #define BLYNK_TEMPLATE_NAME "Water Quality Monitor"
-#define BBLYNK_AUTH_TOKEN "A3hcFFknJ7uIOuVSAhWrqUlBiCSudGwb"
+#define BLYNK_AUTH_TOKEN "A3hcFFknJ7uIOuVSAhWrqUlBiCSudGwb"
 
 // --- IMPORT LIBRARY ---
 #include <Arduino.h>      // Library dasar Arduino
