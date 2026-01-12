@@ -9,8 +9,8 @@
 #include <ESP32Servo.h>
 
 // --- KONFIGURASI UTAMA ---
-const float BATAS_TDS_KOTOR = 80.0; // Jika TDS > 80, dianggap kotor
-const long JEDA_PAKAN = 60000;       // 1 MENIT (60.000 ms) jeda antar pakan otomatis
+// Ubah angka ini sesuai kebutuhan (contoh: 43200000 = 12 jam)
+const long JEDA_PAKAN = 60000;       // SAAT INI: 1 MENIT (60.000 ms)
 
 // --- PIN MAPPING ---
 #define DHTPIN      15
@@ -42,7 +42,7 @@ void executeFeeding() {
   if (isFeeding) return; // Cegah tumpang tindih
   isFeeding = true;
 
-  Serial.println(">> MEMBERI PAKAN...");
+  Serial.println(">> MEMBERI PAKAN (TIMER/MANUAL)...");
   
   // 1. Power ON Servo (Lewat Relay)
   digitalWrite(RELAY_PIN, HIGH);
@@ -65,7 +65,7 @@ void handleSensors() {
   float h = dht.readHumidity();
   float t = dht.readTemperature();
   
-  // Baca & Hitung TDS
+  // Baca & Hitung TDS (Hanya untuk monitoring, tidak untuk trigger pakan)
   float rawV = analogRead(TDS_PIN) * (3.3 / 4095.0);
   float tds = (133.42 * pow(rawV, 3) - 255.86 * pow(rawV, 2) + 857.39 * rawV) * 0.5;
 
@@ -82,18 +82,20 @@ void handleSensors() {
     Blynk.virtualWrite(V1, h);
     Blynk.virtualWrite(V2, tds);
     
-    Serial.printf("T:%.1f | TDS:%.0f | Next Feed in: %ld ms\n", t, tds, (JEDA_PAKAN - (millis() - lastAutoFeed)));
+    // Hitung sisa waktu untuk serial monitor
+    long timeSinceFeed = millis() - lastAutoFeed;
+    long timeLeft = JEDA_PAKAN - timeSinceFeed;
+    if (timeLeft < 0) timeLeft = 0;
 
-    // 3. LOGIKA OTOMATIS (Air Kotor -> Pakan)
-    // Syarat: TDS Tinggi DAN (Sudah lewat 1 menit ATAU belum pernah pakan sama sekali)
-    if (tds > BATAS_TDS_KOTOR) {
-      if (millis() - lastAutoFeed > JEDA_PAKAN || lastAutoFeed == 0) {
-        Serial.println("KONDISI: Air Kotor Terdeteksi & Cooldown Selesai -> Trigger Pakan.");
+    Serial.printf("T:%.1f | TDS:%.0f | Next Feed in: %ld ms\n", t, tds, timeLeft);
+
+    // 3. LOGIKA OTOMATIS (HANYA TIMER)
+    // Syarat: Waktu sekarang - waktu pakan terakhir > JEDA_PAKAN
+    // Atau jika belum pernah pakan (lastAutoFeed == 0)
+    if (millis() - lastAutoFeed > JEDA_PAKAN || lastAutoFeed == 0) {
+        Serial.println("WAKTUNYA PAKAN: Timer tercapai.");
         executeFeeding();
-        lastAutoFeed = millis(); // Reset timer jeda
-      } else {
-        Serial.println("INFO: TDS Tinggi, tapi masih menunggu jeda 1 menit...");
-      }
+        lastAutoFeed = millis(); // Reset timer
     }
   }
 }
@@ -101,7 +103,7 @@ void handleSensors() {
 void reconnectMQTT() {
   if (!mqtt.connected()) {
     if (mqtt.connect(mqtt_id)) {
-      // Koneksi sukses, tidak perlu subscribe untuk mode ini
+      // Koneksi sukses
     }
   }
 }
@@ -124,7 +126,7 @@ void loop() {
   if (!mqtt.connected()) reconnectMQTT();
   mqtt.loop();
 
-  // Interval baca sensor 3 detik
+  // Interval baca sensor & cek timer pakan setiap 3 detik
   if (millis() - lastTime >= 3000) {
     lastTime = millis();
     handleSensors();
@@ -138,7 +140,7 @@ BLYNK_WRITE(V4) {
   if (param.asInt() == 1) {
     Serial.println("Trigger Manual via Blynk V4");
     executeFeeding();
-    // Opsional: Reset timer otomatis juga agar tidak double feed
+    // Reset timer otomatis agar tidak double feed (opsional, bisa dihapus jika mau jadwal tetap jalan)
     lastAutoFeed = millis(); 
   }
 }
