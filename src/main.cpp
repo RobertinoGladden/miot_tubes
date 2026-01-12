@@ -16,7 +16,6 @@ const float BATAS_TDS_AMAN = 80.0;   // Batas TDS agar auto-feed berjalan
 #define DHTPIN      15
 #define DHTTYPE     DHT22
 #define TDS_PIN     34
-#define RELAY_PIN   13
 #define SERVO_PIN   14
 
 // --- NETWORK ---
@@ -44,18 +43,16 @@ void executeFeeding() {
 
   Serial.println(">> MEMBERI PAKAN...");
   
-  // 1. Power ON Servo (Lewat Relay)
-  digitalWrite(RELAY_PIN, HIGH);
+  // 1. Attach Servo
   servo.attach(SERVO_PIN, 500, 2400);
-  delay(200);
+  delay(100); 
   
   // 2. Gerakan Servo
   servo.write(90);  delay(1500); // Buka
   servo.write(0);   delay(1000); // Tutup
   
-  // 3. Power OFF Servo (Hemat daya & anti getar)
+  // 3. Detach Servo (Agar tidak berdengung/jitter saat diam)
   servo.detach();
-  digitalWrite(RELAY_PIN, LOW);
   
   isFeeding = false;
   Serial.println(">> SELESAI.");
@@ -82,33 +79,34 @@ void handleSensors() {
     Blynk.virtualWrite(V1, h);
     Blynk.virtualWrite(V2, tds);
     
-    // Hitung sisa waktu untuk display serial
+    // --- UPDATE SERIAL MONITOR ---
+    // Menampilkan status Temp & Hum dengan jelas sesuai permintaan
     long timeLeft = JEDA_PAKAN - (millis() - lastAutoFeed);
     if (timeLeft < 0) timeLeft = 0;
 
-    Serial.printf("T:%.1f | TDS:%.0f | Next Check: %ld ms\n", t, tds, timeLeft);
+    Serial.println("------------------------------------------------");
+    Serial.printf("Temp: %.1f°C | Hum: %.1f%% | TDS: %.0f ppm\n", t, h, tds);
+    Serial.printf("Next Check in: %ld ms\n", timeLeft);
 
-    // 3. LOGIKA BARU (Auto Feed vs Manual Only)
+    // 3. LOGIKA PAKAN (TDS <= 80 & Timer)
     
     if (tds <= BATAS_TDS_AMAN) {
-      // --- KONDISI A: AIR BERSIH (<= 80) ---
-      // Auto Feed Aktif berdasarkan Timer
+      // --- AIR BERSIH (<= 80) ---
       if (millis() - lastAutoFeed > JEDA_PAKAN || lastAutoFeed == 0) {
-        Serial.println("STATUS: Air Bersih & Waktunya Makan -> AUTO FEED.");
+        Serial.println("[ACTION] Status: Air Bersih -> EXECUTE AUTO FEED.");
         executeFeeding();
-        lastAutoFeed = millis(); // Reset timer
+        lastAutoFeed = millis(); 
       }
     } else {
-      // --- KONDISI B: AIR KOTOR (> 80) ---
-      // Auto Feed DIBLOKIR. Hanya bisa lewat tombol V4.
-      // Kita cek apakah timer sudah lewat hanya untuk memberi notifikasi di Serial
+      // --- AIR KOTOR (> 80) ---
       if (millis() - lastAutoFeed > JEDA_PAKAN) {
-         Serial.println("PERINGATAN: Waktunya makan, TAPI AIR KOTOR (TDS > 80). Auto-feed DIBATALKAN.");
-         // Kita tidak mereset 'lastAutoFeed' agar ketika air bersih kembali, dia langsung makan.
-         // Atau jika ingin di-skip jadwal ini, uncomment baris bawah:
-         // lastAutoFeed = millis(); 
+         Serial.println("[WARNING] Jadwal Pakan Tiba, TAPI DIBATALKAN (TDS > 80).");
+         // lastAutoFeed = millis(); // Uncomment jika ingin men-skip jadwal ini
       }
     }
+    Serial.println("------------------------------------------------");
+  } else {
+    Serial.println("Failed to read from DHT sensor!");
   }
 }
 
@@ -124,8 +122,8 @@ void reconnectMQTT() {
 
 void setup() {
   Serial.begin(115200);
-  pinMode(RELAY_PIN, OUTPUT);
-  digitalWrite(RELAY_PIN, LOW); // Pastikan Relay Off saat boot
+  
+  // Setup Servo & Sensor
   
   dht.begin();
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
@@ -138,7 +136,7 @@ void loop() {
   if (!mqtt.connected()) reconnectMQTT();
   mqtt.loop();
 
-  // Interval baca sensor & cek logika pakan setiap 3 detik
+  // Interval baca sensor 3 detik
   if (millis() - lastTime >= 3000) {
     lastTime = millis();
     handleSensors();
@@ -147,13 +145,11 @@ void loop() {
 
 // --- BLYNK CONTROL ---
 
-// Tombol Manual Pakan (V4)
-// Tombol ini TETAP BERFUNGSI meskipun air kotor (TDS > 80)
+// Tombol Manual Pakan (V4) - Tetap bisa override walau TDS tinggi
 BLYNK_WRITE(V4) {
   if (param.asInt() == 1) {
-    Serial.println("MANUAL TRIGGER (V4) DITEKAN.");
+    Serial.println("[MANUAL] Trigger via Blynk V4...");
     executeFeeding();
-    // Opsional: Reset timer otomatis agar jadwal ulang dari awal
     lastAutoFeed = millis(); 
   }
 }
